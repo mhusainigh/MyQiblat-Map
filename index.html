@@ -12,119 +12,146 @@
 <!-- CSS -->
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
 
 <style>
 html,body{height:100%;margin:0;font-family:Segoe UI,Arial}
 #app{display:flex;height:100%}
-#panel{width:420px;padding:18px;background:#fff;overflow:auto;box-shadow:2px 0 12px rgba(0,0,0,.15)}
+#panel{width:420px;padding:16px;background:#fff;overflow:auto;box-shadow:2px 0 10px rgba(0,0,0,.15)}
 #map{flex:1}
 @media(max-width:768px){
   #app{flex-direction:column}
   #panel{width:100%;height:55%}
   #map{height:45%}
 }
-.map-btn{width:44px;height:44px;background:#fff;border-radius:10px;
-display:flex;align-items:center;justify-content:center;
-box-shadow:0 3px 8px rgba(0,0,0,.3);border:1px solid #ddd}
-.map-controls{position:absolute;top:12px;left:12px;z-index:1000;
-display:flex;flex-direction:column;gap:8px}
-.sensor-active{background:#ffc107!important}
+.ctrl-btn{
+  width:44px;height:44px;border-radius:10px;
+  background:#fff;border:1px solid #ccc;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 6px rgba(0,0,0,.3)
+}
+.ctrl-group{
+  position:absolute;top:12px;left:12px;z-index:1000;
+  display:flex;flex-direction:column;gap:8px
+}
+.active{background:#ffc107!important}
 </style>
 </head>
 
 <body>
 <div id="app">
+
+<!-- ================= PANEL ================= -->
 <div id="panel">
 <h4 class="fw-bold text-success border-bottom pb-2">MyQiblat Pro</h4>
 
-<label class="small fw-bold">Lokasi / Koordinat</label>
-<div class="input-group mb-2">
-<input id="input" class="form-control" placeholder="Cari tempat atau lat,lon">
-<button class="btn btn-success" onclick="search()">Cari</button>
-</div>
+<label class="fw-bold small">Lokasi / Koordinat (DD atau DMS)</label>
+<input id="inputCoord" class="form-control mb-2"
+placeholder="Contoh: 2.936111, 101.860556
+atau 2°56'10&quot; N, 101°51'38&quot; E">
 
 <div class="form-check form-switch mb-2">
 <input class="form-check-input" type="checkbox" id="wmmToggle" checked>
 <label class="form-check-label fw-bold">WMM ON (Bearing Magnetik)</label>
 </div>
 
-<button class="btn btn-primary w-100 mb-2" onclick="search()">Hitung Kiblat</button>
+<button class="btn btn-primary w-100 mb-2" onclick="processInput()">Hitung Arah Kiblat</button>
 
-<div id="result" class="border rounded p-3 d-none">
+<div id="resultBox" class="border rounded p-3 d-none">
 <div class="small">
 <div><b>Azimuth Benar:</b> <span id="trueAz"></span></div>
 <div><b>Bearing Magnetik:</b> <span id="magAz"></span></div>
 <div><b>Deklinasi:</b> <span id="dec"></span></div>
-<div><b>Jarak:</b> <span id="dist"></span></div>
+<div><b>Jarak ke Kaabah:</b> <span id="dist"></span></div>
 </div>
-<button class="btn btn-outline-danger w-100 mt-2" onclick="downloadKML()">Export KML Kiblat</button>
+<button class="btn btn-outline-danger w-100 mt-2" onclick="exportKML()">Eksport KML Kiblat</button>
 </div>
 
-<div class="small text-muted mt-3 text-center">
+<div class="text-center text-muted small mt-3">
 PWA · Geodesic · WMM NOAA
 </div>
 </div>
 
+<!-- ================= MAP ================= -->
 <div id="map">
-<div class="map-controls">
-<div class="map-btn" onclick="locate()"><span class="material-icons">my_location</span></div>
-<div id="compassBtn" class="map-btn" onclick="toggleCompass()">
-<span class="material-icons">explore</span>
+<div class="ctrl-group">
+<button class="ctrl-btn" onclick="locateGPS()">GPS</button>
+<button id="compassBtn" class="ctrl-btn" onclick="toggleCompass()">Kompas</button>
 </div>
 </div>
-</div>
+
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/Raruto/leaflet-rotate@1.0.1/dist/leaflet-rotate.js"></script>
 
 <script>
-/* ================= CONFIG ================= */
+/* ================= CONSTANT ================= */
 const KAABA={lat:21.42248611,lon:39.82620556};
-let map,marker,line,current=null,isCompass=false;
 
-/* ================= MAP INIT ================= */
-map=L.map('map',{rotate:true,touchRotate:true}).setView([4.5,101],6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+/* ================= MAP ================= */
+const map=L.map('map',{rotate:true,touchRotate:true})
+.setView([4.5,101],6);
 
-/* ================= CORE ================= */
-function search(){
-const q=input.value.trim();
-const c=parseCoord(q);
-if(c){current=c;update();}
-else{
-fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${q}`)
-.then(r=>r.json()).then(d=>{
-if(!d[0])return alert("Lokasi tidak dijumpai");
-current={lat:+d[0].lat,lon:+d[0].lon};
-update();
-});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png')
+.addTo(map);
+
+let marker=null,line=null,current=null,isCompass=false;
+
+/* ================= INPUT PROCESS ================= */
+function processInput(){
+try{
+const coord=parseCoord(inputCoord.value);
+if(!coord) return alert("Format koordinat tidak sah");
+current=coord;
+computeQiblat();
+}catch(e){
+alert("Ralat JavaScript: "+e.message);
 }
 }
 
-function update(){
+/* ================= PARSER ================= */
+function parseCoord(t){
+t=t.toUpperCase();
+let m=t.match(/(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/);
+if(m) return {lat:+m[1],lon:+m[2]};
+
+let dms=[...t.matchAll(/(\d+)[°]\s*(\d+)[']\s*([\d.]+)["]?\s*([NSEW])/g)];
+if(dms.length>=2){
+const conv=p=>{
+let v=+p[1]+p[2]/60+p[3]/3600;
+return (p[4]=='S'||p[4]=='W')?-v:v;
+};
+return {lat:conv(dms[0]),lon:conv(dms[1])};
+}
+return null;
+}
+
+/* ================= QIBLAT ================= */
+function computeQiblat(){
 const φ1=rad(current.lat),φ2=rad(KAABA.lat);
 const dλ=rad(KAABA.lon-current.lon);
 const az=(deg(Math.atan2(Math.sin(dλ),
 Math.cos(φ1)*Math.tan(φ2)-Math.sin(φ1)*Math.cos(dλ)))+360)%360;
-const dist=L.latLng(current.lat,current.lon)
-.distanceTo([KAABA.lat,KAABA.lon])/1000;
 
 fetch(`https://www.ngdc.noaa.gov/geomag-web/calculators/calculateDeclination?lat1=${current.lat}&lon1=${current.lon}&resultFormat=json`)
-.then(r=>r.json()).then(j=>{
+.then(r=>r.json())
+.then(j=>{
 const dec=j.result[0].declination;
-display(az,dec,dist);
+renderResult(az,dec);
 });
 }
 
-function display(trueAz,dec,dist){
+function renderResult(trueAz,dec){
 const mag=(trueAz-dec+360)%360;
-trueAzEl.innerText=trueAz.toFixed(3)+"°";
-magAzEl.innerText=mag.toFixed(3)+"°";
-decEl.innerText=dec.toFixed(2)+"°";
-distEl.innerText=dist.toFixed(2)+" km";
-result.classList.remove("d-none");
+trueAzEl.textContent=trueAz.toFixed(3)+"°";
+magAzEl.textContent=mag.toFixed(3)+"°";
+decEl.textContent=dec.toFixed(2)+"°";
+
+const d=L.latLng(current.lat,current.lon)
+.distanceTo([KAABA.lat,KAABA.lon])/1000;
+distEl.textContent=d.toFixed(2)+" km";
+
+resultBox.classList.remove("d-none");
 
 if(marker)map.removeLayer(marker);
 if(line)map.removeLayer(line);
@@ -136,34 +163,30 @@ line=L.polyline([[current.lat,current.lon],[KAABA.lat,KAABA.lon]],
 map.setView([current.lat,current.lon],16);
 }
 
-/* ================= COMPASS ================= */
-function toggleCompass(){
-isCompass=!isCompass;
-compassBtn.classList.toggle("sensor-active",isCompass);
-if(isCompass){
-window.addEventListener("deviceorientation",orient,true);
-}else{
-window.removeEventListener("deviceorientation",orient,true);
-map.setBearing(0);
-}
-}
-function orient(e){
-if(!e.alpha)return;
-const h=360-e.alpha;
-map.setBearing(h);
-}
-
 /* ================= GPS ================= */
-function locate(){
+function locateGPS(){
 map.locate({setView:true,maxZoom:17});
 map.once("locationfound",e=>{
 current={lat:e.latlng.lat,lon:e.latlng.lng};
-update();
+computeQiblat();
 });
 }
 
+/* ================= COMPASS ================= */
+function toggleCompass(){
+isCompass=!isCompass;
+compassBtn.classList.toggle("active",isCompass);
+if(isCompass){
+window.addEventListener("deviceorientation",e=>{
+if(e.alpha) map.setBearing(360-e.alpha);
+});
+}else{
+map.setBearing(0);
+}
+}
+
 /* ================= KML ================= */
-function downloadKML(){
+function exportKML(){
 const kml=`<?xml version="1.0"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
@@ -182,23 +205,19 @@ const kml=`<?xml version="1.0"?>
 </Placemark>
 </Document>
 </kml>`;
-const b=new Blob([kml],{type:"application/vnd.google-earth.kml+xml"});
 const a=document.createElement("a");
-a.href=URL.createObjectURL(b);
+a.href=URL.createObjectURL(new Blob([kml],
+{type:"application/vnd.google-earth.kml+xml"}));
 a.download="Arah_Kiblat.kml";
 a.click();
 }
 
 /* ================= UTIL ================= */
 const rad=d=>d*Math.PI/180,deg=r=>r*180/Math.PI;
-function parseCoord(t){
-const m=t.match(/(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/);
-return m?{lat:+m[1],lon:+m[2]}:null;
-}
 
 /* ================= PWA ================= */
-if('serviceWorker' in navigator){
-navigator.serviceWorker.register('service-worker.js');
+if("serviceWorker" in navigator){
+navigator.serviceWorker.register("service-worker.js");
 }
 </script>
 </body>
